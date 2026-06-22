@@ -8,9 +8,24 @@ import "google/type/latlng.proto";
 
 // LatLng represents a geographic point in the WGS84 coordinate system.
 // It wraps the standard google.type.LatLng to add accuracy metadata.
+//
+// This is the primary way to represent locations across all domains:
+// - Reports (infrastructure, security, health, etc.)
+// - Donations (campaign locations, beneficiary addresses)
+// - Institutions (headquarters, service areas)
+// - Users (optional location for proximity features)
+//
+// Accuracy is essential for privacy:
+//   - Anonymous reports REQUIRE accuracy >= 500m (enforced in Report CEL).
+//   - `accuracy_meters = 0` means "exact" (e.g., manual entry, verified GPS).
+//   - >0 indicates the radius of uncertainty (GPS accuracy, network triangulation, etc.).
+//
+// IMPLEMENTATION NOTE: The server MUST enforce accuracy_meters >= 500
+//    for anonymous reports. This validation lives in the Report message,
+//    not in GeoPoint, because accuracy is context-dependent.
 message LatLng {
   // The underlying coordinates (latitude, longitude) in degrees.
-  // Range: latitude [-90, 90], longitude: [-180, 180].
+  // Range: latitude [-90, 90], longitude [-180, 180].
   google.type.LatLng coordinates = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED
@@ -19,7 +34,6 @@ message LatLng {
   // Accuracy of the location fix in meters.
   // - 0 means the location is considered exact (e.g., manual entry, verified GPS).
   // - >0 indicates the radius of uncertainty (GPS accuracy, network triangulation, etc.).
-  // - For anonymous reports, this MUST be >= 500m (enforced by CEL).
   double accuracy_meters = 2 [
     (buf.validate.field).double = {
       gte: 0.0
@@ -29,23 +43,23 @@ message LatLng {
   ];
 }
 
-// GeoPoint extends LatLng with server-computed spatial indices for
-// high-performance geospatial queries.
+// GeoPoint extends LatLng with server‑computed spatial indices for
+// high‑performance geospatial queries.
 //
-// The server is reponsible for deriving s2_cell_id, h3_cell_id, and geohash
+// The server is responsible for deriving s2_cell_id and h3_cell_id
 // from the coordinates. Clients MUST NOT set these fields; they are OUTPUT_ONLY.
 //
 // Why two indices?
-// - S2 (Google S2 geometry library): good for point-in-cell queries and
-//   covering calculations. S2 cell ID is a 64-bit integer that represents
-//   a hierarchial grid. Level 30 (~1 cm^2) is used for precise point lookups.
-//
-// - S3 (Uber H3): hexagonal hierarchical grid, excellent for aggregation,
-//   heatmaps, and visualisation. Resolution 9 (~4 km^2) is ideal for province-level
+// - S2 (Google S2 geometry library): good for point‑in‑cell queries and
+//   covering calculations. S2 cell ID is a 64‑bit integer that represents
+//   a hierarchical grid. Level 30 (~1 cm^2) is used for precise point lookups.
+// - H3 (Uber H3): hexagonal hierarchical grid, excellent for aggregation,
+//   heatmaps, and visualisation. Resolution 9 (~4 km^2) is ideal for province‑level
 //   dashboards and heatmaps.
 //
-// - Geohash: included for compatibility with external systems (Elasticsearch,
-//   Dragonfly GEO, etc.). Base32 encoded, up to 12 characters.
+// The server uses these indices to accelerate spatial queries:
+//   - S2 for point-in-cell and distance calculations.
+//   - H3 for aggregation and heatmap generation.
 message GeoPoint {
   // The geographic coordinates and accuracy.
   LatLng point = 1 [
@@ -60,37 +74,26 @@ message GeoPoint {
     SOURCE_UNSPECIFIED = 0;
     // GPS chip (high accuracy, typically < 10m).
     SOURCE_GPS = 1;
-    // Wifi / cellular triangulation (moderate accuracy).
+    // WiFi / cellular triangulation (moderate accuracy).
     SOURCE_NETWORK = 2;
     // Fused sensor data (Android/iOS fused location provider).
     SOURCE_FUSED = 3;
     // Manually entered by the user (accuracy often unknown or coarse).
     SOURCE_MANUAL = 4;
   }
-
   Source source = 2 [(google.api.field_behavior) = OPTIONAL];
 
-  // S2 cell ID (64-bit) at level 30 (approx 1 cm^2).
-  // Server-computed from coordinates. Do not send from the client.
+  // S2 cell ID (64‑bit) at level 30 (approx 1 cm^2).
+  // Server‑computed from coordinates. Do not send from the client.
   uint64 s2_cell_id = 3 [
     (buf.validate.field).uint64.gt = 0,
     (google.api.field_behavior) = OUTPUT_ONLY
   ];
 
-  // H3 cell ID (64-bit) at resolution 9 (approx 4 km^2).
-  // Server-computed from coordinates. Do not send from the client.
+  // H3 cell ID (64‑bit) at resolution 9 (approx 4 km^2).
+  // Server‑computed from coordinates. Do not send from the client.
   uint64 h3_cell_id = 4 [
     (buf.validate.field).uint64.gt = 0,
-    (google.api.field_behavior) = OUTPUT_ONLY
-  ];
-
-  // Geohash string (Base32, up to 12 characters) for compatibility.
-  // Server-computed from coordinates. Do not send from the client.
-  string geohash = 5 [
-    (buf.validate.field).string = {
-      max_len: 12
-      pattern: "^[0-9b-hjkmnp-z]*$"
-    },
     (google.api.field_behavior) = OUTPUT_ONLY
   ];
 }
@@ -98,25 +101,25 @@ message GeoPoint {
 // BoundingBox defines a rectangular region using two corner points.
 // Used for map viewport queries, spatial filtering, and bounding box searches.
 //
-// The box is defined by its south-west and north-east corners.
-// The south-west corner MUST have a latitude less than the north-east corner.
-// If the box crosses the antimeridian, use Viewport instead.
+// The box is defined by its south‑west and north‑east corners.
+// The south‑west corner MUST have a latitude less than the north‑east corner.
+// If the box crosses the antimeridian, use Viewport instead (if defined).
 message BoundingBox {
-  // South-west corner (minimum latitude, minimum longitude).
+  // South‑west corner (minimum latitude, minimum longitude).
   GeoPoint south_west = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED
   ];
 
-  // North-east corner (maximum latitude, maximum longitude).
+  // North‑east corner (maximum latitude, maximum longitude).
   GeoPoint north_east = 2 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED
   ];
 
-  // Validate that the box is well-formed:
+  // Validate that the box is well‑formed:
   // - south_west.latitude < north_east.latitude
-  // - south_west.longitude < north_east.longitude (for non-antimeridian boxes)
+  // - south_west.longitude < north_east.longitude (for non‑antimeridian boxes)
   option (buf.validate.message).cel = {
     id: "bounding_box.valid"
     message: "south_west.latitude must be less than north_east.latitude"
@@ -124,51 +127,21 @@ message BoundingBox {
   };
 }
 
-// Viewport represents a geographic region that may cross the 180th meridian.
-// It follows the same semantics as google.geo.type.Viewport:
-// - If low == high, the viewport is a single point.
-// - If low.longitude > high.longitude, the region crosses the antimeridian.
-// - If low.longitude == -180 and high.longitude == 180, the region includes all longitudes.
-//
-// Uses this for map viewports that may wrap around the globe.
-message Viewport {
-  // The low point of the viewport (south-west, but may have higher longitude).
-  GeoPoint low = 1 [
-    (buf.validate.field).required = true,
-    (google.api.field_behavior) = REQUIRED
-  ];
-
-  // The high point of the viewport (north-east, but may have lower longitude).
-  GeoPoint high = 2 [
-    (buf.validate.field).required = true,
-    (google.api.field_behavior) = REQUIRED
-  ];
-
-  // Validate that the viewport is not empty
-  // - low.latitude <= high.latitude (latitude range non-empty)
-  // - longitude range may be inverted (crosses antimeridian)
-  option (buf.validate.message).cel = {
-    id: "viewport.latitude_range_non_empty"
-    message: "low.latitude must be <= high.latitude"
-    expression: "this.low.point.coordinates.latitude <= this.high.point.coordinates.latitude"
-  };
-}
-
 // Address represents a physical address in the Dominican Republic.
 // It follows the hierarchy: province -> municipality -> sector -> street.
 //
 // Why not use google.type.PostalAddress?
-// - google.type.PostalAddress is generic and lacks RD-specific structure.
+// - google.type.PostalAddress is generic and lacks RD‑specific structure.
 // - We need province/municipality/sector as explicit fields for indexing,
 //   routing (institutions), and dashboard aggregations.
-// - Province code is ISO 3166-2:DO (e.g., "DO-01" for Distrito Nacional).
+// - Province code is ISO 3166‑2:DO (e.g., "DO‑01" for Distrito Nacional).
 //
-// Address are used in:
+// Addresses are used in:
 // - Reports: to give a textual reference alongside GPS coordinates.
 // - Institutions: to define their jurisdiction and contact location.
-// - Donations: to specifiy beneficiary addresses and campaign locations.
+// - Donations: to specify beneficiary addresses and campaign locations.
 message Address {
-  // ISO 3166-2:DO province code (e.g., "DO-01", "DO-02", "DO-03")
+  // ISO 3166‑2:DO province code (e.g., "DO‑01", "DO‑02", "DO‑03").
   // Using a string allows adding new provinces without breaking the schema.
   string province_code = 1 [
     (buf.validate.field).string = {pattern: "^DO-[0-9]{2}$"},
@@ -196,8 +169,8 @@ message Address {
     (google.api.field_behavior) = OPTIONAL
   ];
 
-  // Additional landmark of colloquial reference.
-  // Criticla in the Dominican Republic where formal address nomenclature is often incosistent.
+  // Additional landmark or colloquial reference.
+  // Critical in the Dominican Republic where formal address nomenclature is often inconsistent.
   // Example: "frente al colmado de la esquina".
   string reference = 5 [
     (buf.validate.field).string = {max_len: 200},
