@@ -2,6 +2,7 @@ version: v2
 
 modules:
   - path: proto/
+    name: buf.build/mdostudio/mejorando
 
 deps:
   - buf.build/googleapis/googleapis
